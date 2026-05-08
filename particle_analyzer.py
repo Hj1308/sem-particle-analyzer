@@ -97,7 +97,8 @@ def preprocess(gray8: np.ndarray, clahe_clip: float = 2.0,
 # Segmentation (Otsu + Watershed)
 # -----------------------------------------------------------------------------
 def segment(gray8: np.ndarray, particles_are_bright: bool | None = None,
-            fg_distance_ratio: float = 0.4) -> np.ndarray:
+            fg_distance_ratio: float = 0.4
+            ) -> tuple[np.ndarray, np.ndarray]:
     """
     Otsu threshold + marker-controlled watershed.
 
@@ -112,6 +113,7 @@ def segment(gray8: np.ndarray, particles_are_bright: bool | None = None,
     Returns
     -------
     labels : int32 array, 0 = background, 1..N = individual particles.
+    binary : uint8 binary mask used by watershed (for debugging).
     """
     # Otsu binarization
     _, binary = cv2.threshold(gray8, 0, 255,
@@ -156,7 +158,7 @@ def segment(gray8: np.ndarray, particles_are_bright: bool | None = None,
             continue
         labels[markers == m] = next_id
         next_id += 1
-    return labels
+    return labels, binary
 
 
 # -----------------------------------------------------------------------------
@@ -249,19 +251,77 @@ def measure_particles(labels: np.ndarray, pixel_size_nm: float = 1.0,
 # -----------------------------------------------------------------------------
 def annotate(gray8: np.ndarray, labels: np.ndarray, df: pd.DataFrame,
              contour_color=(0, 255, 0),
-             label_color=(0, 255, 255)) -> np.ndarray:
-    """Overlay particle contours and IDs on the original image."""
+             label_color=(0, 255, 255),
+             thickness: int | None = None,
+             font_scale: float | None = None) -> np.ndarray:
+    """
+    Overlay particle contours and IDs on the original image.
+
+    Contour thickness and font size auto-scale with image dimensions so
+    output is visible on both small (512 px) and large (3000+ px) SEM
+    micrographs. Pass `thickness` / `font_scale` to override.
+    """
+    H, W = gray8.shape[:2]
+    if thickness is None:
+        thickness = max(1, int(round(min(H, W) / 600)))
+    if font_scale is None:
+        font_scale = max(0.4, min(H, W) / 1500.0)
+
     overlay = cv2.cvtColor(gray8, cv2.COLOR_GRAY2BGR)
     for _, row in df.iterrows():
         pid = int(row["particle_id"])
         mask = (labels == pid).astype(np.uint8)
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        cv2.drawContours(overlay, contours, -1, contour_color, 1)
+        cv2.drawContours(overlay, contours, -1, contour_color, thickness)
         cx, cy = int(row["centroid_x"]), int(row["centroid_y"])
-        cv2.putText(overlay, str(pid), (cx - 6, cy + 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, label_color, 1, cv2.LINE_AA)
+        cv2.putText(overlay, str(pid),
+                    (cx - int(6 * font_scale), cy + int(4 * font_scale)),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale,
+                    label_color, max(1, thickness), cv2.LINE_AA)
     return overlay
+
+
+def save_debug_panel(gray8: np.ndarray, binary: np.ndarray,
+                     labels: np.ndarray, output_path: str) -> None:
+    """
+    Save a 2x2 diagnostic panel:
+        [preprocessed]   [Otsu mask]
+        [watershed labels]   [contours]
+    Useful to see WHY segmentation succeeded or failed.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 14))
+    axes[0, 0].imshow(gray8, cmap="gray")
+    axes[0, 0].set_title("1. Preprocessed grayscale")
+
+    pct = int(np.sum(binary == 255) / binary.size * 100)
+    axes[0, 1].imshow(binary, cmap="gray")
+    axes[0, 1].set_title(f"2. Otsu binary  (white = {pct}% of frame)")
+
+    rng = np.random.default_rng(42)
+    color_lut = rng.integers(40, 255,
+                             size=(int(labels.max()) + 1, 3),
+                             dtype=np.uint8)
+    color_lut[0] = [0, 0, 0]
+    axes[1, 0].imshow(color_lut[labels])
+    axes[1, 0].set_title(f"3. Watershed labels  (N = {int(labels.max())})")
+
+    over = cv2.cvtColor(gray8, cv2.COLOR_GRAY2BGR)
+    H, W = gray8.shape[:2]
+    th = max(1, int(round(min(H, W) / 600)))
+    for label in range(1, int(labels.max()) + 1):
+        m = (labels == label).astype(np.uint8)
+        cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL,
+                                 cv2.CHAIN_APPROX_NONE)
+        cv2.drawContours(over, cs, -1, (0, 255, 0), th)
+    axes[1, 1].imshow(cv2.cvtColor(over, cv2.COLOR_BGR2RGB))
+    axes[1, 1].set_title("4. Contours overlay")
+
+    for ax in axes.flat:
+        ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=120)
+    plt.close(fig)
 
 
 def plot_size_distribution(df: pd.DataFrame, output_path: str,
@@ -294,8 +354,20 @@ def analyze(image_path: str, output_dir: str = "output",
             fg_distance_ratio: float = 0.4,
             particles_are_bright: bool | None = None,
             keep_border: bool = False,
+            crop_top_px: int = 0,
+            crop_bottom_px: int = 0,
+            save_debug: bool = False,
             verbose: bool = True) -> pd.DataFrame:
-    """Run the full pipeline on a single image."""
+    """Run the full pipeline on a single image.
+
+    Extra parameters
+    ----------------
+    crop_top_px, crop_bottom_px : pixels to remove from the top/bottom
+        before processing. Use this to strip the SEM info bar (commonly
+        60-150 px tall at the bottom).
+    save_debug : if True, also saves a 2x2 diagnostic panel showing the
+        intermediate stages (preprocessed / binary / labels / contours).
+    """
     os.makedirs(output_dir, exist_ok=True)
     base = Path(image_path).stem
 
@@ -303,15 +375,31 @@ def analyze(image_path: str, output_dir: str = "output",
     if verbose:
         print(f"Read: {image_path}  shape={raw.shape}  dtype={raw.dtype}")
 
+    # Strip SEM info bar regions before analysis
+    if crop_top_px > 0 or crop_bottom_px > 0:
+        H = raw.shape[0]
+        bottom = H - crop_bottom_px if crop_bottom_px > 0 else H
+        raw = raw[crop_top_px:bottom, :]
+        if verbose:
+            print(f"Cropped to: {raw.shape}  "
+                  f"(removed {crop_top_px}px top, {crop_bottom_px}px bottom)")
+
     gray8 = normalize_to_8bit(raw)
     pre = preprocess(gray8, clahe_clip=clahe_clip,
                      gaussian_k=gaussian_kernel)
 
-    labels = segment(pre, particles_are_bright=particles_are_bright,
-                     fg_distance_ratio=fg_distance_ratio)
+    labels, binary = segment(pre,
+                             particles_are_bright=particles_are_bright,
+                             fg_distance_ratio=fg_distance_ratio)
     n_candidates = int(labels.max())
     if verbose:
         print(f"Watershed found {n_candidates} candidate particles.")
+
+    if save_debug:
+        debug_path = os.path.join(output_dir, f"{base}_debug.png")
+        save_debug_panel(pre, binary, labels, debug_path)
+        if verbose:
+            print(f"Debug panel saved: {debug_path}")
 
     df = measure_particles(labels, pixel_size_nm=pixel_size_nm,
                            min_area_px=min_area_px,
@@ -323,7 +411,8 @@ def analyze(image_path: str, output_dir: str = "output",
 
     if len(df) == 0:
         print("⚠️  No particles remained after filtering. Try adjusting "
-              "--min-area, --fg-distance-ratio, or polarity flags.")
+              "--min-area, --fg-distance-ratio, polarity flags, or "
+              "crop_bottom_px to remove the SEM info bar.")
         return df
 
     overlay = annotate(gray8, labels, df)
@@ -381,6 +470,15 @@ def _build_argparser() -> argparse.ArgumentParser:
                           help="Force dark particles on bright background")
     p.add_argument("--keep-border", action="store_true",
                    help="Keep particles touching the image border")
+    p.add_argument("--crop-top", type=int, default=0, dest="crop_top",
+                   help="Pixels to crop from the top of the image "
+                        "(default: 0)")
+    p.add_argument("--crop-bottom", type=int, default=0, dest="crop_bottom",
+                   help="Pixels to crop from the bottom of the image, "
+                        "useful for stripping SEM info bars (default: 0)")
+    p.add_argument("--save-debug", action="store_true", dest="save_debug",
+                   help="Also save a 2x2 diagnostic panel showing the "
+                        "intermediate stages of segmentation")
     return p
 
 
@@ -403,6 +501,9 @@ def main() -> None:
         fg_distance_ratio=args.fg_distance_ratio,
         particles_are_bright=bright,
         keep_border=args.keep_border,
+        crop_top_px=args.crop_top,
+        crop_bottom_px=args.crop_bottom,
+        save_debug=args.save_debug,
     )
 
 
