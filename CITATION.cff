@@ -2,6 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software in your research, please cite it as below."
 title: "sem-particle-analyzer: watershed segmentation and size analysis of particles in SEM images"
 version: 0.2.0
+doi: 10.5281/zenodo.24261363
 date-released: 2026-11-15
 license: MIT
 repository-code: https://github.com/Hj1308/sem-particle-analyzer

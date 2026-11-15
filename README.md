@@ -1,5 +1,8 @@
 # SEM Particle Analyzer
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24261363.svg)](https://doi.org/10.5281/zenodo.24261363)
+[![CI](https://github.com/Hj1308/sem-particle-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/Hj1308/sem-particle-analyzer/actions/workflows/ci.yml)
+
 Watershed-based segmentation and quantitative measurement of particles in
 SEM (Scanning Electron Microscopy) images, with a focus on **separating
 touching particles** that defeat simple thresholding.
@@ -256,9 +259,16 @@ MIT — see [LICENSE](LICENSE).
 
 ## Citation
 
-If this tool was useful in academic work, please cite the repository:
+If this tool was useful in academic work, please cite it:
 
 ```
-Hj1308. SEM Particle Analyzer.
-https://github.com/Hj1308/sem-particle-analyzer
+Jafari, H. sem-particle-analyzer: watershed segmentation and size analysis
+of particles in SEM images (v0.2.0). Zenodo, 2026.
+https://doi.org/10.5281/zenodo.24261364
 ```
+
+To cite whichever version is current, use the concept DOI
+[10.5281/zenodo.24261363](https://doi.org/10.5281/zenodo.24261363), which
+always resolves to the latest release. GitHub's "Cite this repository" button
+reads [`CITATION.cff`](CITATION.cff). Report the version you used in the
+Experimental section.
