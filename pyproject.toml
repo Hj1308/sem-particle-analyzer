@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sem-particle-analyzer"
+version = "0.2.0.dev0"
+description = "Watershed-based segmentation and size analysis of particles in SEM images"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Hoda Jafari" }]
+requires-python = ">=3.9"
+dependencies = [
+    "opencv-python>=4.5",
+    "numpy>=1.20",
+    "pandas>=1.3",
+    "tifffile>=2021.7.2",
+    "matplotlib>=3.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov", "ruff~=0.15.0"]
+
+[project.scripts]
+sem-particle-analyzer = "particle_analyzer:main"
+
+[project.urls]
+Repository = "https://github.com/Hj1308/sem-particle-analyzer"
+
+[tool.setuptools]
+py-modules = ["particle_analyzer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+xfail_strict = true
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["*.ipynb"]
