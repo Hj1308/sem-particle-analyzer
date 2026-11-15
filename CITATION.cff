@@ -1,0 +1,41 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+title: "sem-particle-analyzer: watershed segmentation and size analysis of particles in SEM images"
+version: 0.2.0
+date-released: 2026-11-15
+license: MIT
+repository-code: https://github.com/Hj1308/sem-particle-analyzer
+url: https://github.com/Hj1308/sem-particle-analyzer
+abstract: >
+  A Python tool for counting and sizing particles in scanning electron
+  microscopy (SEM) images. Otsu thresholding with polarity taken from the
+  image frame, h-maxima seeds of the Euclidean distance transform and a
+  mask-restricted watershed split touching particles; per-particle area,
+  equivalent diameter, Crofton perimeter, circularity and aspect ratio are
+  calibrated to nanometres. Outputs number-weighted size statistics
+  (d10/d50/d90, 95 % CI of the mean, log-normal fit) and a size histogram sized
+  to ACS, RSC or Elsevier column widths. Validated on synthetic images with
+  known particle sizes.
+authors:
+  - family-names: Jafari
+    given-names: Hoda
+    alias: Hj1308
+keywords:
+  - scanning electron microscopy
+  - SEM
+  - particle size distribution
+  - image segmentation
+  - watershed
+  - nanoparticles
+  - materials characterization
+references:
+  - type: article
+    title: "scikit-image: image processing in Python"
+    authors:
+      - family-names: van der Walt
+        given-names: Stéfan
+    journal: PeerJ
+    year: 2014
+    volume: 2
+    pages: e453
+    doi: 10.7717/peerj.453
