@@ -103,7 +103,7 @@ df.head()
 | `--max-area` | none | Maximum particle area (pixels) |
 | `--clahe-clip` | `2.0` | CLAHE clip limit (`0` disables) |
 | `--gaussian-kernel` | `5` | Gaussian blur kernel (odd) |
-| `--fg-distance-ratio` | `0.4` | Watershed seed threshold; **lower → more splits**, higher → fewer splits |
+| `--seed-h` | `2.0` | Seed depth (px) for watershed: raise if single particles are over-split, lower if touching particles stay merged |
 | `--bright-particles` | auto | Force bright-on-dark polarity |
 | `--dark-particles` | auto | Force dark-on-bright polarity |
 | `--keep-border` | off | Include particles touching the edge |
@@ -141,11 +141,11 @@ For each input image the output directory receives:
 |--------|------|-------------|
 | `particle_id` | — | Integer label, matches the annotated image |
 | `area_px`, `area_nm2` | px², nm² | Pixel and calibrated area |
-| `perimeter_px`, `perimeter_nm` | px, nm | Contour length |
+| `perimeter_px`, `perimeter_nm` | px, nm | Crofton perimeter estimate (close to the true outline length) |
 | `eq_diameter_px`, `eq_diameter_nm` | px, nm | Diameter of a circle with the same area: `2·√(A/π)` |
 | `major_axis_nm`, `minor_axis_nm` | nm | Long/short axes of the minimum-area rotated bounding rectangle |
 | `aspect_ratio` | — | `major / minor` (≥ 1; `1` = round) |
-| `circularity` | — | `4π·A / P²` (= 1 for a perfect circle, lower for elongated/rough shapes) |
+| `circularity` | — | `4π·A / P²`: ≈ 1.00 ± 0.02 for disks wider than ~30 px, lower for elongated/rough shapes; below ~20 px pixelation lowers it (≈ 0.9 at 16 px) |
 | `centroid_x`, `centroid_y` | px | Centroid in image coordinates |
 
 ---
@@ -166,7 +166,7 @@ For each input image the output directory receives:
         └────────┬─────────┘
                  ▼
         ┌──────────────────┐
-        │  Otsu threshold  │  auto-detect bright vs dark particles
+        │  Otsu threshold  │  polarity from the image frame (background)
         └────────┬─────────┘
                  ▼
         ┌──────────────────┐
@@ -178,7 +178,11 @@ For each input image the output directory receives:
         └────────┬─────────┘
                  ▼
         ┌──────────────────┐
-        │  Watershed       │  marker-controlled splitting of touching particles
+        │  h-maxima seeds  │  one seed per local distance peak deeper than h
+        └────────┬─────────┘
+                 ▼
+        ┌──────────────────┐
+        │  Watershed       │  on −distance, restricted to the particle mask
         └────────┬─────────┘
                  ▼
         ┌──────────────────┐
@@ -192,13 +196,30 @@ For each input image the output directory receives:
 
 | Symptom | Try |
 |---------|-----|
-| Touching particles still merged | Lower `--fg-distance-ratio` (e.g. `0.3`) |
-| One particle split into many fragments | Raise `--fg-distance-ratio` (e.g. `0.5–0.6`) |
+| Touching particles still merged | Lower `--seed-h` (e.g. `1.0`) |
+| One particle split into many fragments | Raise `--seed-h` (e.g. `3–5`) |
 | Tiny noise blobs counted as particles | Raise `--min-area` |
 | Large agglomerates dominating the histogram | Set `--max-area` |
 | Background being detected as particles | Try `--dark-particles` or `--bright-particles` |
 | Faint particles missed | Raise `--clahe-clip` (e.g. `3.0–4.0`) |
 | Edges look jittery | Raise `--gaussian-kernel` to `7` or `9` |
+
+---
+
+## Validation
+
+Synthetic images with known geometry (`tests/synthetic.py`; checked in CI):
+
+| scene | true | found | d₅₀ true → found | d₁₀ true → found |
+|---|---|---|---|---|
+| 400 separated disks, log-normal radii 3–40 px, clean | 400 | 400 | 21.91 → 21.79 px | 15.8 → 15.7 px |
+| same scene, SEM-like (blur σ = 1 px, ±20 % illumination gradient, noise σ = 10) | 400 | 398 | 21.91 → 22.85 px | 15.8 → 16.2 px |
+| same scene, v0.1 segmentation (clean) | 400 | 193 | 21.91 → 26.73 px | 15.8 → 22.6 px |
+
+Isolated disks: equivalent diameter within 0.3 % from 16 to 120 px. On blurred,
+noisy images the threshold places edges about half a pixel outward (d₅₀ +4 %
+above); this matters for particles only a few pixels wide, so image them at a
+magnification that gives at least ~10 px per particle diameter.
 
 ---
 

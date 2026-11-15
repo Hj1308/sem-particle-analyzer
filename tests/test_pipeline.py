@@ -1,8 +1,8 @@
 """Tests on synthetic images with known geometry.
 
-Classes Test* check behaviour that is correct today. TestKnownDefects pins the four
-defects found in the 2026-11-15 review as strict xfails: each must start passing
-(and its xfail marker be removed) when the corresponding fix lands.
+TestAccuracy holds the defects found in the 2026-11-15 review; they were strict
+xfails until the v0.2 segmentation (h-maxima seeds, mask-restricted watershed,
+frame-based polarity, Crofton perimeter) fixed them, and now guard against regressions.
 """
 
 from __future__ import annotations
@@ -79,9 +79,18 @@ class TestSegmentation:
         img, _ = disks(spec)
         assert len(run(img)) == len(spec)
 
-    def test_splits_two_touching_disks_with_tuned_seed_ratio(self):
-        img, _ = disks([(250, 300, 40), (325, 300, 40)])  # centres 75 px apart, overlap 5 px
-        assert len(run(img, fg_distance_ratio=0.7)) == 2
+    def test_every_component_gets_a_seed(self):
+        # particles narrower than 2h, or h above every radius, must not vanish
+        img, _ = disks([(100, 100, 3), (200, 100, 2), (300, 300, 20)])
+        assert len(run(img, min_area_px=5)) == 3
+        assert len(run(img, min_area_px=5, h=50)) == 3
+
+    def test_deprecated_ratio_warns_and_is_ignored(self):
+        img, _ = disks(grid(r=20, pitch=80))
+        pre = pa.preprocess(pa.normalize_to_8bit(img))
+        with pytest.warns(DeprecationWarning):
+            labels, _ = pa.segment(pre, particles_are_bright=True, fg_distance_ratio=0.7)
+        assert len(pa.measure_particles(labels, min_area_px=10)) == len(grid(r=20, pitch=80))
 
     def test_dark_particles_with_explicit_polarity(self):
         spec = grid(r=20, pitch=80)
@@ -111,7 +120,7 @@ class TestMeasurement:
     def test_area_filters(self):
         img, _ = disks([(150, 150, 10), (400, 400, 40)])
         pre = pa.preprocess(pa.normalize_to_8bit(img))
-        labels, _ = pa.segment(pre, particles_are_bright=True, fg_distance_ratio=0.2)
+        labels, _ = pa.segment(pre, particles_are_bright=True)
         assert len(pa.measure_particles(labels, min_area_px=1000)) == 1
         assert len(pa.measure_particles(labels, min_area_px=10, max_area_px=1000)) == 1
 
@@ -183,12 +192,7 @@ class TestAnalyze:
 class TestCLI:
     def test_defaults(self):
         a = pa._build_argparser().parse_args(["x.tif"])
-        assert (a.pixel_size, a.min_area, a.fg_distance_ratio, a.keep_border) == (
-            1.0,
-            30,
-            0.4,
-            False,
-        )
+        assert (a.pixel_size, a.min_area, a.seed_h, a.keep_border) == (1.0, 30, 2.0, False)
 
     def test_polarity_flags_are_exclusive(self):
         with pytest.raises(SystemExit):
@@ -207,8 +211,7 @@ class TestCLI:
 
 
 # -- known defects (review 2026-11-15) -------------------------------------------------
-class TestKnownDefects:
-    @pytest.mark.xfail(reason="global seed threshold 0.4*max(dist) drops small particles")
+class TestAccuracy:
     def test_small_particles_kept_in_polydisperse_sample(self):
         spec = [(80 + i * 90, 100, 40) for i in range(6)] + [
             (60 + i * 45, 350, 10) for i in range(12)
@@ -216,19 +219,16 @@ class TestKnownDefects:
         img, _ = disks(spec)
         assert len(run(img)) == 18
 
-    @pytest.mark.xfail(reason="watershed boundary ring (-1) is removed from every particle")
     @pytest.mark.parametrize("r", [8, 15, 30, 60])
     def test_equivalent_diameter_within_one_percent(self, r):
         img, true_d = disks([(300, 300, r)])
         assert run(img).eq_diameter_px.iloc[0] == pytest.approx(true_d[0], rel=0.01)
 
-    @pytest.mark.xfail(reason="cv2.arcLength on the pixel contour overestimates the perimeter")
     @pytest.mark.parametrize("r", [15, 30, 60])
     def test_disk_circularity_close_to_one(self, r):
         img, _ = disks([(300, 300, r)])
         assert run(img).circularity.iloc[0] == pytest.approx(1.0, abs=0.03)
 
-    @pytest.mark.xfail(reason="auto polarity assumes particles cover < 50 % of the frame")
     def test_auto_polarity_with_dense_particles(self):
         spec = grid(r=28, pitch=58, margin=30)
         img, true_d = disks(spec)
@@ -238,21 +238,44 @@ class TestKnownDefects:
         df = pa.measure_particles(labels, min_area_px=10)
         assert df.eq_diameter_px.median() == pytest.approx(np.median(true_d), rel=0.1)
 
-    @pytest.mark.xfail(reason="seed ratio 0.4 does not split two disks overlapping by 5 px")
     def test_splits_two_touching_disks_at_default_settings(self):
         img, _ = disks([(250, 300, 40), (325, 300, 40)])
         assert len(run(img)) == 2
 
-    @pytest.mark.xfail(
-        reason="cv2.watershed sets the image frame to -1, so no label reaches row/col 0 "
-        "and edge-clipped particles are never dropped"
-    )
     def test_border_particles_are_dropped_by_default(self):
         img, _ = disks([(300, 300, 30), (10, 300, 30)])
         pre = pa.preprocess(pa.normalize_to_8bit(img))
         labels, _ = pa.segment(pre, particles_are_bright=True)
         assert len(pa.measure_particles(labels, min_area_px=10)) == 1
 
-    @pytest.mark.xfail(reason="Otsu on a featureless frame still splits it, giving a fake particle")
     def test_blank_image_has_no_particles(self):
         assert run(np.full((100, 100), 40, np.uint8)).empty
+
+
+class TestPolydisperseScene:
+    """400 log-normal disks (radius 3-40 px) on a 1024 px field."""
+
+    @pytest.fixture(scope="class")
+    def scene(self):
+        from synthetic import random_scene
+
+        img, true_d = disks(random_scene(), shape=(1024, 1024))
+        return img, true_d
+
+    def test_clean_scene_counts_and_sizes(self, scene):
+        img, true_d = scene
+        df = run(img, bright=None, min_area_px=20)
+        assert len(df) == len(true_d) == 400
+        assert df.eq_diameter_px.median() == pytest.approx(np.median(true_d), rel=0.01)
+        assert np.percentile(df.eq_diameter_px, 10) == pytest.approx(
+            np.percentile(true_d, 10), rel=0.02
+        )
+
+    def test_sem_like_scene(self, scene):
+        from synthetic import sem_like
+
+        img, true_d = scene
+        df = run(sem_like(img), bright=None, min_area_px=20)
+        assert len(df) >= 0.98 * len(true_d)
+        # blur + threshold widen edges by about half a pixel: d50 within 6 %
+        assert df.eq_diameter_px.median() == pytest.approx(np.median(true_d), rel=0.06)
