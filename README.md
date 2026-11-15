@@ -37,8 +37,11 @@ annotated image.
 ```bash
 git clone https://github.com/Hj1308/sem-particle-analyzer.git
 cd sem-particle-analyzer
-pip install -r requirements.txt
+pip install -e .            # or: pip install -r requirements.txt
 ```
+
+`pip install -e .` also installs the `sem-particle-analyzer` command
+(same options as `python particle_analyzer.py`).
 
 Tested on Python 3.9+.
 
@@ -182,6 +185,19 @@ Three files are written to the output directory for each input image:
 | Background being detected as particles | Try `--dark-particles` or `--bright-particles` |
 | Faint particles missed | Raise `--clahe-clip` (e.g. `3.0–4.0`) |
 | Edges look jittery | Raise `--gaussian-kernel` to `7` or `9` |
+
+---
+
+## Testing
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+The tests build synthetic images with known particle sizes and check
+counts, calibration, filters and outputs. Known accuracy defects are listed
+in `CHANGELOG.md` and pinned as strict expected failures until fixed.
 
 ---
 
