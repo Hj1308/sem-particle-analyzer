@@ -252,15 +252,17 @@ class TestAccuracy:
         assert run(np.full((100, 100), 40, np.uint8)).empty
 
 
+@pytest.fixture(scope="module")
+def scene():
+    """400 log-normal disks (radius 3-40 px) on a 1024 px field."""
+    from synthetic import random_scene
+
+    img, true_d = disks(random_scene(), shape=(1024, 1024))
+    return img, true_d
+
+
 class TestPolydisperseScene:
     """400 log-normal disks (radius 3-40 px) on a 1024 px field."""
-
-    @pytest.fixture(scope="class")
-    def scene(self):
-        from synthetic import random_scene
-
-        img, true_d = disks(random_scene(), shape=(1024, 1024))
-        return img, true_d
 
     def test_clean_scene_counts_and_sizes(self, scene):
         img, true_d = scene

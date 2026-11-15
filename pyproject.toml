@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sem-particle-analyzer"
-version = "0.2.0.dev0"
+version = "0.2.0"
 description = "Watershed-based segmentation and size analysis of particles in SEM images"
 readme = "README.md"
 license = { file = "LICENSE" }

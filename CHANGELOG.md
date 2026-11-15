@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 (2026-11-15)
 
 ### Added
 - `pyproject.toml`: the tool installs with `pip install -e .` and provides the
@@ -46,6 +46,11 @@ now pass as regression tests:
   frame as boundary).
 - A featureless frame yielded a fake particle.
 
+### Tests and CI
+- The polydisperse-scene fixture is module-scoped (pytest 9 deprecates class-scoped
+  fixtures defined as instance methods); CI also runs Python 3.14.
+
 ### Docs
+- `CITATION.cff` added.
 - README: validation table on synthetic scenes; the old tuning guide had the
   direction of `--fg-distance-ratio` reversed — replaced by `--seed-h`.
