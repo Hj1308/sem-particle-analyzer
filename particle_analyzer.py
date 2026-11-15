@@ -345,6 +345,137 @@ def plot_size_distribution(df: pd.DataFrame, output_path: str,
 
 
 # -----------------------------------------------------------------------------
+# Size statistics and publication figure
+# -----------------------------------------------------------------------------
+# Printed sizes from the publishers' artwork guides (checked November 2026):
+# ACS single column up to 3.33 in, double 7 in, lettering >= 4.5 pt;
+# RSC 8.3 / 17.1 cm, TIFF >= 600 dpi; Elsevier 90 / 140 / 190 mm, text >= 6 pt
+# (about 7 pt recommended), 1000 dpi for line art. Same values as the
+# chem-figures conventions used across these tools.
+JOURNALS = {
+    "acs": {"widths_cm": {"single": 8.46, "double": 17.78}, "dpi": 600},
+    "rsc": {"widths_cm": {"single": 8.3, "double": 17.1}, "dpi": 600},
+    "elsevier": {"widths_cm": {"single": 9.0, "onehalf": 14.0, "double": 19.0}, "dpi": 1000},
+}
+_BAR_COLOR = "#0072B2"  # Okabe-Ito blue; black edges keep bars distinct in grayscale
+
+
+def _gum_decimals(u: float) -> int:
+    e = int(np.floor(np.log10(u)))
+    return (2 if int(u / 10**e + 1e-9) < 3 else 1) - 1 - e
+
+
+def _round_pm(value: float, u: float) -> tuple[str, str]:
+    """Round u to 2 significant digits if it starts with 1 or 2, else 1, and the value
+    to the same decimal place (GUM, JCGM 100:2008 7.2.6). Returns two strings."""
+    if not np.isfinite(u) or u <= 0:
+        return f"{value:.3g}", "0"
+    d = _gum_decimals(u)
+    if _gum_decimals(round(u, d)) != d:  # rounding carried, e.g. 0.096 -> 0.10
+        d = _gum_decimals(round(u, d))
+    k = max(d, 0)
+    return f"{round(value, d):.{k}f}", f"{round(u, d):.{k}f}"
+
+
+def size_statistics(values) -> dict:
+    """Number-weighted size statistics of positive values (e.g. equivalent diameters).
+
+    Returns N, mean, SD, the 95 % confidence interval of the mean (t-based),
+    d10 / d50 / d90 (number percentiles), span = (d90 - d10) / d50, and the
+    log-normal maximum-likelihood fit: geometric mean (median of the fitted
+    distribution) and geometric standard deviation sigma_g."""
+    from scipy import stats as sstats
+
+    x = np.asarray(values, float)
+    x = x[np.isfinite(x) & (x > 0)]
+    n = int(x.size)
+    out = {"N": n}
+    if n == 0:
+        return out
+    d10, d50, d90 = np.percentile(x, [10, 50, 90])
+    out.update(mean=float(x.mean()), median=float(d50), d10=float(d10), d50=float(d50),
+               d90=float(d90), span=float((d90 - d10) / d50) if d50 > 0 else np.nan)
+    if n >= 2:
+        sd = float(x.std(ddof=1))
+        half = float(sstats.t.ppf(0.975, n - 1) * sd / np.sqrt(n))
+        lx = np.log(x)
+        out.update(sd=sd, ci95_mean=(out["mean"] - half, out["mean"] + half),
+                   geo_mean=float(np.exp(lx.mean())), geo_sd=float(np.exp(lx.std(ddof=1))))
+    return out
+
+
+def plot_size_distribution_publication(
+    df: pd.DataFrame,
+    output_base: str,
+    column: str = "eq_diameter_nm",
+    xlabel: str = "Equivalent diameter (nm)",
+    journal: str = "acs",
+    width: str = "single",
+    lognormal: bool = True,
+    unit: str = "nm",
+) -> dict:
+    """Journal-ready size histogram, saved as PDF (vector, editable text), TIFF and PNG.
+
+    Sized to the journal column width, 7.5 pt text, inward ticks, Freedman-Diaconis
+    bins, counts on the y axis (bars start at 0), an optional log-normal fit drawn
+    with the same count scaling, and the statistics printed on the panel
+    (N, mean +/- SD, d10-d50-d90). Returns the statistics dict plus 'files' and
+    'warnings'. State in the caption that the distribution is number-weighted."""
+    if journal not in JOURNALS:
+        raise ValueError(f"journal must be one of {sorted(JOURNALS)}")
+    spec = JOURNALS[journal]
+    if width not in spec["widths_cm"]:
+        raise ValueError(f"width must be one of {sorted(spec['widths_cm'])} for {journal}")
+    x = df[column].to_numpy(float)
+    x = x[np.isfinite(x) & (x > 0)]
+    st = size_statistics(x)
+    warns = []
+    if st["N"] < 100:
+        warns.append(f"Only {st['N']} particles: percentiles and the fit are uncertain; "
+                     "measure more particles (several images) if possible.")
+    w_in = spec["widths_cm"][width] / 2.54
+    rc = {
+        "font.family": "sans-serif", "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+        "font.size": 7.5, "axes.labelsize": 7.5, "xtick.labelsize": 7, "ytick.labelsize": 7,
+        "axes.linewidth": 0.8, "xtick.direction": "in", "ytick.direction": "in",
+        "xtick.top": True, "ytick.right": True, "legend.frameon": False,
+        "pdf.fonttype": 42, "ps.fonttype": 42, "svg.fonttype": "none",
+    }
+    files = {}
+    with plt.rc_context(rc):
+        fig, ax = plt.subplots(figsize=(w_in, w_in * 0.72))
+        if st["N"] > 0:
+            counts, edges, _ = ax.hist(x, bins="fd" if st["N"] >= 4 else "auto",
+                                       color=_BAR_COLOR, edgecolor="black", linewidth=0.5)
+            if lognormal and st["N"] >= 10 and st.get("geo_sd", 1) > 1:
+                from scipy import stats as sstats
+                xs = np.linspace(max(edges[0], 1e-9), edges[-1], 400)
+                pdf = sstats.lognorm.pdf(xs, s=np.log(st["geo_sd"]), scale=st["geo_mean"])
+                ax.plot(xs, pdf * st["N"] * (edges[1] - edges[0]), color="black", lw=1.0,
+                        label="Log-normal fit")
+                ax.legend(loc="upper right", handlelength=1.5)
+            m, sd = _round_pm(st["mean"], st.get("sd", np.nan))
+            text = [f"N = {st['N']}", f"mean ± SD = {m} ± {sd} {unit}",
+                    f"d$_{{10}}$/d$_{{50}}$/d$_{{90}}$ = {st['d10']:.3g}/{st['d50']:.3g}/"
+                    f"{st['d90']:.3g} {unit}"]
+            ax.text(0.98, 0.78 if lognormal else 0.97, "\n".join(text), transform=ax.transAxes,
+                    ha="right", va="top", fontsize=6.5)
+            ax.set_ylim(0, max(counts.max() * 1.45, 1))
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("Count")
+        fig.tight_layout(pad=0.3)
+        os.makedirs(os.path.dirname(output_base) or ".", exist_ok=True)
+        for ext in ("pdf", "tif", "png"):
+            path = f"{output_base}.{ext}"
+            kw = {"pil_kwargs": {"compression": "tiff_lzw"}} if ext == "tif" else {}
+            fig.savefig(path, dpi=spec["dpi"], **kw)
+            files[ext] = path
+        plt.close(fig)
+    st.update(files=files, warnings=warns, journal=journal, width=width)
+    return st
+
+
+# -----------------------------------------------------------------------------
 # End-to-end pipeline
 # -----------------------------------------------------------------------------
 def analyze(image_path: str, output_dir: str = "output",
@@ -357,6 +488,9 @@ def analyze(image_path: str, output_dir: str = "output",
             crop_top_px: int = 0,
             crop_bottom_px: int = 0,
             save_debug: bool = False,
+            journal: str = "acs",
+            fig_width: str = "single",
+            lognormal_fit: bool = True,
             verbose: bool = True) -> pd.DataFrame:
     """Run the full pipeline on a single image.
 
@@ -367,6 +501,12 @@ def analyze(image_path: str, output_dir: str = "output",
         60-150 px tall at the bottom).
     save_debug : if True, also saves a 2x2 diagnostic panel showing the
         intermediate stages (preprocessed / binary / labels / contours).
+    journal, fig_width : target journal ('acs', 'rsc', 'elsevier') and column
+        width ('single', 'double'; Elsevier also 'onehalf') for the
+        publication histogram <name>_size_distribution.{pdf,tif,png}.
+    lognormal_fit : overlay the log-normal maximum-likelihood fit.
+    A <name>_size_statistics.csv with N, mean, SD, 95 % CI of the mean,
+    d10/d50/d90, span and the log-normal parameters is also written.
     """
     os.makedirs(output_dir, exist_ok=True)
     base = Path(image_path).stem
@@ -422,8 +562,18 @@ def analyze(image_path: str, output_dir: str = "output",
     csv_path = os.path.join(output_dir, f"{base}_measurements.csv")
     df.to_csv(csv_path, index=False)
 
-    hist_path = os.path.join(output_dir, f"{base}_size_distribution.png")
-    plot_size_distribution(df, hist_path)
+    fig_stats = plot_size_distribution_publication(
+        df, os.path.join(output_dir, f"{base}_size_distribution"),
+        journal=journal, width=fig_width, lognormal=lognormal_fit)
+    hist_path = fig_stats["files"]["pdf"]
+    stats_row = {k: v for k, v in fig_stats.items()
+                 if k not in ("files", "warnings", "ci95_mean")}
+    if "ci95_mean" in fig_stats:
+        stats_row["ci95_mean_low"], stats_row["ci95_mean_high"] = fig_stats["ci95_mean"]
+    stats_path = os.path.join(output_dir, f"{base}_size_statistics.csv")
+    pd.DataFrame([stats_row]).to_csv(stats_path, index=False)
+    for w in fig_stats["warnings"]:
+        print(f"⚠️  {w}")
 
     if verbose:
         print(f"\n{'=' * 50}")
@@ -436,7 +586,8 @@ def analyze(image_path: str, output_dir: str = "output",
         print("\n✅  Outputs written to:")
         print(f"   {annotated_path}")
         print(f"   {csv_path}")
-        print(f"   {hist_path}")
+        print(f"   {hist_path}  (+ .tif, .png)")
+        print(f"   {stats_path}")
 
     return df
 
@@ -479,6 +630,14 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--save-debug", action="store_true", dest="save_debug",
                    help="Also save a 2x2 diagnostic panel showing the "
                         "intermediate stages of segmentation")
+    p.add_argument("--journal", choices=sorted(JOURNALS), default="acs",
+                   help="Journal format for the size histogram (default: acs)")
+    p.add_argument("--fig-width", choices=["single", "onehalf", "double"],
+                   default="single", dest="fig_width",
+                   help="Column width of the histogram (default: single; "
+                        "onehalf is Elsevier only)")
+    p.add_argument("--no-lognormal", action="store_true", dest="no_lognormal",
+                   help="Do not overlay the log-normal fit on the histogram")
     return p
 
 
@@ -504,6 +663,9 @@ def main() -> None:
         crop_top_px=args.crop_top,
         crop_bottom_px=args.crop_bottom,
         save_debug=args.save_debug,
+        journal=args.journal,
+        fig_width=args.fig_width,
+        lognormal_fit=not args.no_lognormal,
     )
 
 
