@@ -17,6 +17,7 @@ dependencies = [
     "tifffile>=2021.7.2",
     "matplotlib>=3.4",
     "scipy>=1.7",
+    "scikit-image>=0.20",
 ]
 
 [project.optional-dependencies]

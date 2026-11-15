@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import warnings
 from pathlib import Path
 
 import cv2
@@ -26,6 +27,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tifffile as tiff
+from scipy import ndimage as ndi
+from skimage.measure import label as cc_label
+from skimage.measure import regionprops
+from skimage.morphology import h_maxima
+from skimage.segmentation import watershed
 
 
 # -----------------------------------------------------------------------------
@@ -97,32 +103,48 @@ def preprocess(gray8: np.ndarray, clahe_clip: float = 2.0,
 # Segmentation (Otsu + Watershed)
 # -----------------------------------------------------------------------------
 def segment(gray8: np.ndarray, particles_are_bright: bool | None = None,
-            fg_distance_ratio: float = 0.4
+            h: float = 2.0, fg_distance_ratio: float | None = None
             ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Otsu threshold + marker-controlled watershed.
+    Otsu threshold + marker-controlled watershed on the distance transform.
 
     Parameters
     ----------
     gray8 : uint8 grayscale image (preprocessed).
-    particles_are_bright : if None, auto-detected from the binary fraction.
-    fg_distance_ratio : threshold ratio on the distance transform used to
-        seed sure-foreground markers. Increase for tighter splits, decrease
-        to merge close peaks (default 0.4).
+    particles_are_bright : None (default) decides the polarity from the image
+        frame: the class that occupies most of the outer one-pixel border is
+        taken as background. This works when particles cover most of the field.
+    h : seed depth in pixels. Each particle is seeded at the regional maxima of
+        the Euclidean distance transform that rise more than `h` above their
+        surroundings (h-maxima). The criterion is local, so small particles get
+        their own seeds next to large ones. Raise `h` if single particles are
+        over-split, lower it if touching particles stay merged (default 2.0).
+    fg_distance_ratio : deprecated and ignored (the former global seed rule,
+        `dist > ratio * dist.max()`, dropped small particles).
 
     Returns
     -------
-    labels : int32 array, 0 = background, 1..N = individual particles.
+    labels : int32 array, 0 = background, 1..N = individual particles. Every
+        foreground pixel belongs to a particle (no watershed boundary ring).
     binary : uint8 binary mask used by watershed (for debugging).
     """
-    # Otsu binarization
+    if fg_distance_ratio is not None:
+        warnings.warn(
+            "fg_distance_ratio is ignored since v0.2: seeds now use h-maxima of the "
+            "distance transform; tune `h` instead.", DeprecationWarning, stacklevel=2)
+    empty = np.zeros(gray8.shape, np.int32)
+    if int(gray8.max()) == int(gray8.min()):  # featureless frame: nothing to segment
+        return empty, np.zeros(gray8.shape, np.uint8)
+
+    # Otsu binarization (255 = brighter class)
     _, binary = cv2.threshold(gray8, 0, 255,
                               cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Auto-detect polarity (bright vs dark particles)
+    # Polarity: the background dominates the outer frame of the field of view
     if particles_are_bright is None:
-        white_frac = float(np.sum(binary == 255)) / binary.size
-        particles_are_bright = white_frac < 0.5
+        frame = np.concatenate([binary[0, :], binary[-1, :],
+                                binary[:, 0], binary[:, -1]])
+        particles_are_bright = float(np.mean(frame == 255)) < 0.5
     if not particles_are_bright:
         binary = cv2.bitwise_not(binary)
 
@@ -130,34 +152,25 @@ def segment(gray8: np.ndarray, particles_are_bright: bool | None = None,
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = binary > 0
+    if not mask.any() or mask.all():
+        return empty, binary
 
-    # Distance transform -> seeds for watershed
-    dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
-    _, sure_fg = cv2.threshold(
-        dist, fg_distance_ratio * dist.max(), 255, cv2.THRESH_BINARY)
-    sure_fg = sure_fg.astype(np.uint8)
-
-    sure_bg = cv2.dilate(binary, kernel, iterations=3)
-    unknown = cv2.subtract(sure_bg, sure_fg)
-
-    # Build markers: 1 = background, 2..N = particle seeds, 0 = unknown
-    n_markers, markers = cv2.connectedComponents(sure_fg)
-    markers = markers + 1
-    markers[unknown == 255] = 0
-
-    # Watershed needs 3-channel input
-    bgr = cv2.cvtColor(gray8, cv2.COLOR_GRAY2BGR)
-    markers = cv2.watershed(bgr, markers)
-    # After watershed: -1 = boundary, 1 = background, >=2 = particles
-
-    # Re-pack to 0-based contiguous labels
-    labels = np.zeros_like(markers, dtype=np.int32)
-    next_id = 1
-    for m in np.unique(markers):
-        if m <= 1:
-            continue
-        labels[markers == m] = next_id
-        next_id += 1
+    # Distance transform -> h-maxima seeds -> watershed restricted to the mask
+    dist = ndi.distance_transform_edt(mask)
+    markers = cc_label(h_maxima(dist, h))
+    # A component with no seed (a particle narrower than ~2h, or h set too high)
+    # would vanish; seed it at its own distance maximum instead.
+    comps, n_comp = ndi.label(mask)
+    seeded = np.zeros(n_comp + 1, bool)
+    seeded[np.unique(comps[markers > 0])] = True
+    missing = [i for i in range(1, n_comp + 1) if not seeded[i]]
+    if missing:
+        peaks = ndi.maximum_position(dist, comps, missing)
+        nxt = int(markers.max()) + 1
+        for k, (r, c) in enumerate(peaks):
+            markers[r, c] = nxt + k
+    labels = watershed(-dist, markers, mask=mask).astype(np.int32)
     return labels, binary
 
 
@@ -179,56 +192,47 @@ def measure_particles(labels: np.ndarray, pixel_size_nm: float = 1.0,
     touch_border : if False (default), particles touching the image edge
         are discarded (their true area is unknown).
 
+    The perimeter is the Crofton estimate (scikit-image), which is close to the
+    true length of a smooth outline; circularity = 4*pi*A/P^2 is then about 1
+    for disks wider than ~30 px and drops below ~0.9 for very small particles,
+    where pixelation dominates.
+
     Returns
     -------
     pandas.DataFrame, one row per particle.
     """
     H, W = labels.shape
     rows = []
-
-    for label in range(1, int(labels.max()) + 1):
-        mask = (labels == label).astype(np.uint8)
-        area_px = int(mask.sum())
+    for rp in regionprops(labels):
+        area_px = int(rp.area)
         if area_px < min_area_px:
             continue
         if max_area_px is not None and area_px > max_area_px:
             continue
-
-        # Drop edge-touching particles
-        if not touch_border:
-            ys, xs = np.where(mask)
-            if (ys.min() == 0 or xs.min() == 0
-                    or ys.max() == H - 1 or xs.max() == W - 1):
-                continue
-
-        contours, _ = cv2.findContours(
-            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        if not contours:
+        r0, c0, r1, c1 = rp.bbox  # r1, c1 exclusive
+        if not touch_border and (r0 == 0 or c0 == 0 or r1 == H or c1 == W):
             continue
-        cnt = max(contours, key=cv2.contourArea)
-
-        perimeter_px = float(cv2.arcLength(cnt, True))
+        perimeter_px = float(rp.perimeter_crofton)
         if perimeter_px <= 0:
             continue
-
         eq_diam_px = 2.0 * np.sqrt(area_px / np.pi)
         circularity = 4.0 * np.pi * area_px / (perimeter_px ** 2)
 
         # Rotated bounding rectangle for aspect ratio + axes
+        crop = rp.image.astype(np.uint8)
+        contours, _ = cv2.findContours(crop, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        cnt = max(contours, key=cv2.contourArea)
         if len(cnt) >= 5:
-            (cx, cy), (w, h), _ = cv2.minAreaRect(cnt)
-            major = max(w, h)
-            minor = min(w, h)
+            _, (w, h), _ = cv2.minAreaRect(cnt)
+            major, minor = max(w, h), min(w, h)
             aspect_ratio = major / minor if minor > 0 else 1.0
         else:
-            M = cv2.moments(cnt)
-            cx = M["m10"] / M["m00"] if M["m00"] else 0
-            cy = M["m01"] / M["m00"] if M["m00"] else 0
             major = minor = 0.0
             aspect_ratio = 1.0
+        cy, cx = rp.centroid
 
         rows.append({
-            "particle_id": label,
+            "particle_id": int(rp.label),
             "area_px": area_px,
             "area_nm2": area_px * pixel_size_nm ** 2,
             "perimeter_px": perimeter_px,
@@ -239,8 +243,8 @@ def measure_particles(labels: np.ndarray, pixel_size_nm: float = 1.0,
             "minor_axis_nm": minor * pixel_size_nm,
             "aspect_ratio": aspect_ratio,
             "circularity": circularity,
-            "centroid_x": cx,
-            "centroid_y": cy,
+            "centroid_x": float(cx),
+            "centroid_y": float(cy),
         })
 
     return pd.DataFrame(rows)
@@ -482,7 +486,8 @@ def analyze(image_path: str, output_dir: str = "output",
             pixel_size_nm: float = 1.0,
             min_area_px: int = 30, max_area_px: int | None = None,
             clahe_clip: float = 2.0, gaussian_kernel: int = 5,
-            fg_distance_ratio: float = 0.4,
+            seed_h: float = 2.0,
+            fg_distance_ratio: float | None = None,
             particles_are_bright: bool | None = None,
             keep_border: bool = False,
             crop_top_px: int = 0,
@@ -530,7 +535,7 @@ def analyze(image_path: str, output_dir: str = "output",
 
     labels, binary = segment(pre,
                              particles_are_bright=particles_are_bright,
-                             fg_distance_ratio=fg_distance_ratio)
+                             h=seed_h, fg_distance_ratio=fg_distance_ratio)
     n_candidates = int(labels.max())
     if verbose:
         print(f"Watershed found {n_candidates} candidate particles.")
@@ -551,7 +556,7 @@ def analyze(image_path: str, output_dir: str = "output",
 
     if len(df) == 0:
         print("⚠️  No particles remained after filtering. Try adjusting "
-              "--min-area, --fg-distance-ratio, polarity flags, or "
+              "--min-area, --seed-h, polarity flags, or "
               "crop_bottom_px to remove the SEM info bar.")
         return df
 
@@ -611,9 +616,12 @@ def _build_argparser() -> argparse.ArgumentParser:
                    help="CLAHE clip limit (0 disables; default: 2.0)")
     p.add_argument("--gaussian-kernel", type=int, default=5,
                    help="Gaussian blur kernel size, odd (default: 5)")
-    p.add_argument("--fg-distance-ratio", type=float, default=0.4,
-                   help="Distance-transform seed ratio for watershed "
-                        "(default: 0.4)")
+    p.add_argument("--seed-h", type=float, default=2.0, dest="seed_h",
+                   help="Seed depth in pixels for watershed (h-maxima of the "
+                        "distance transform); raise if particles are over-split, "
+                        "lower if touching particles stay merged (default: 2.0)")
+    p.add_argument("--fg-distance-ratio", type=float, default=None,
+                   help=argparse.SUPPRESS)  # deprecated, ignored
     polarity = p.add_mutually_exclusive_group()
     polarity.add_argument("--bright-particles", action="store_true",
                           help="Force bright particles on dark background")
@@ -657,6 +665,7 @@ def main() -> None:
         max_area_px=args.max_area,
         clahe_clip=args.clahe_clip,
         gaussian_kernel=args.gaussian_kernel,
+        seed_h=args.seed_h,
         fg_distance_ratio=args.fg_distance_ratio,
         particles_are_bright=bright,
         keep_border=args.keep_border,

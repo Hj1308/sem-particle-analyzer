@@ -18,16 +18,34 @@
   warning is printed below 100 particles.
 - `scipy` is now a dependency (t quantile, log-normal curve).
 
-### Known issues (pinned as strict xfail tests, to be fixed next)
-Measured on synthetic disks with known size:
-- A single seed threshold (0.4 × the largest distance-transform peak) drops small
-  particles in polydisperse images: 6 large + 12 small disks → 6 found.
-- At the default seed ratio two disks overlapping by 5 px are not split.
-- Every particle loses its one-pixel watershed boundary ring: equivalent
-  diameter −6.3 % at 16 px, −1.1 % at 120 px.
-- Circularity of a perfect disk is 0.91–0.95 (perimeter from `cv2.arcLength`).
-- Auto polarity fails when particles cover more than half of the frame (the
-  background was measured as one particle).
-- Edge-clipped particles are never dropped: `cv2.watershed` sets the image frame
-  to −1, so no label reaches the first or last row/column.
-- A featureless frame yields a fake particle.
+### Changed
+- **Segmentation (v0.2).** Seeds are the h-maxima of the Euclidean distance
+  transform (`h`, CLI `--seed-h`, default 2 px) instead of one global threshold
+  `dist > 0.4 · max(dist)`; every connected component without a seed gets one at
+  its own maximum. The watershed runs on −distance inside the particle mask
+  (scikit-image), so every foreground pixel belongs to a particle. Polarity is
+  decided from the image frame (the background dominates the border).
+  Perimeter uses the Crofton estimate. `fg_distance_ratio` /
+  `--fg-distance-ratio` are deprecated and ignored (warning). New dependency:
+  `scikit-image`.
+- `measure_particles` uses `regionprops` (one pass instead of one full-image scan
+  per particle).
+
+### Fixed
+All seven defects below were pinned as strict xfails in the previous change and
+now pass as regression tests:
+- Small particles were dropped next to large ones (6 large + 12 small disks →
+  6 found; 400 log-normal disks → 193 found, d₅₀ +22 %). Now 18/18 and 400/400.
+- Two disks overlapping by 5 px were not split at the default setting.
+- Every particle lost its one-pixel watershed boundary ring (equivalent diameter
+  −6.3 % at 16 px … −1.1 % at 120 px). Now within 0.3 %.
+- A perfect disk had circularity 0.91–0.95. Now 1.01–1.02 for 30–120 px disks
+  (pixelation still lowers it for particles below ~20 px).
+- Auto polarity failed when particles covered more than half of the frame.
+- Edge-clipped particles were never dropped (`cv2.watershed` marked the image
+  frame as boundary).
+- A featureless frame yielded a fake particle.
+
+### Docs
+- README: validation table on synthetic scenes; the old tuning guide had the
+  direction of `--fg-distance-ratio` reversed — replaced by `--seed-h`.
