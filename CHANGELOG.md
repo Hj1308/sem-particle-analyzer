@@ -8,6 +8,16 @@
 - Test suite on synthetic images with known geometry (`tests/`), and GitHub
   Actions CI on Python 3.9, 3.11 and 3.13.
 
+- **Journal-ready size histogram.** `<name>_size_distribution` is now written
+  as PDF (editable text), TIFF and PNG at the printed column width of ACS,
+  RSC or Elsevier (`--journal`, `--fig-width`), with Freedman–Diaconis bins,
+  an optional log-normal fit (`--no-lognormal`) and N, mean ± SD (GUM-rounded)
+  and d₁₀/d₅₀/d₉₀ on the panel.
+- **`<name>_size_statistics.csv`** and `size_statistics()`: N, mean, SD, 95 %
+  CI of the mean (t), d₁₀/d₅₀/d₉₀, span, log-normal geometric mean and SD. A
+  warning is printed below 100 particles.
+- `scipy` is now a dependency (t quantile, log-normal curve).
+
 ### Known issues (pinned as strict xfail tests, to be fixed next)
 Measured on synthetic disks with known size:
 - A single seed threshold (0.4 × the largest distance-transform peak) drops small

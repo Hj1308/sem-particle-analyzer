@@ -107,19 +107,33 @@ df.head()
 | `--bright-particles` | auto | Force bright-on-dark polarity |
 | `--dark-particles` | auto | Force dark-on-bright polarity |
 | `--keep-border` | off | Include particles touching the edge |
+| `--journal` | `acs` | Format of the size histogram: `acs`, `rsc`, `elsevier` |
+| `--fig-width` | `single` | Column width: `single`, `double` (`onehalf` for Elsevier) |
+| `--no-lognormal` | off | Do not overlay the log-normal fit |
+| `--crop-top`, `--crop-bottom` | `0` | Pixels to remove (e.g. the SEM info bar) |
+| `--save-debug` | off | Also save a 2×2 diagnostic panel |
 
 ---
 
 ## Output
 
-Three files are written to the output directory for each input image:
+For each input image the output directory receives:
 
 - **`<name>_annotated.tif`** — original image with green contours and
   cyan particle IDs overlaid.
 - **`<name>_measurements.csv`** — one row per particle with the columns
   below.
-- **`<name>_size_distribution.png`** — histogram of equivalent diameters
-  with mean/median/SD reported in the title.
+- **`<name>_size_distribution.pdf` / `.tif` / `.png`** — journal-ready
+  histogram of equivalent diameters: sized to the chosen journal's column
+  width (ACS 8.46/17.78 cm, RSC 8.3/17.1 cm, Elsevier 9/14/19 cm), 7.5 pt
+  text, Freedman–Diaconis bins, optional log-normal fit, and N,
+  mean ± SD and d₁₀/d₅₀/d₉₀ on the panel. The PDF keeps the text editable;
+  the TIFF is LZW-compressed at the journal's resolution (600 dpi ACS/RSC,
+  1000 dpi Elsevier). Check your journal's own guide before submission.
+- **`<name>_size_statistics.csv`** — N, mean, SD, 95 % confidence interval
+  of the mean, d₁₀, d₅₀, d₉₀, span, and the log-normal geometric mean and
+  geometric SD. All statistics are number-weighted; say so in the caption.
+  Fewer than 100 particles triggers a warning.
 
 ### CSV columns
 
